@@ -132,8 +132,23 @@ display_df = filtered_df[display_cols].copy()
 if display_df.empty:
     st.info("No books to display.")
 else:
+    # Pagination keeps each render light even when thousands of rows match
+    PAGE_SIZE = 50
+    total_rows = len(display_df)
+    total_pages = max(1, (total_rows - 1) // PAGE_SIZE + 1)
+
+    page_col, info_col = st.columns([1, 3])
+    with page_col:
+        page = st.number_input(
+            "Page", min_value=1, max_value=total_pages, value=1, step=1
+        )
+    with info_col:
+        start = (page - 1) * PAGE_SIZE
+        end = min(start + PAGE_SIZE, total_rows)
+        st.caption(f"Showing {start + 1}-{end} of {total_rows} results · Page {page} of {total_pages}")
+
     st.dataframe(
-        display_df,
+        display_df.iloc[start:end],
         column_config={
             "url": st.column_config.LinkColumn("🔗 Link"),
             "title": "Title",
@@ -146,10 +161,10 @@ else:
         use_container_width=True
     )
 
-    # Download CSV
+    # Download CSV (full filtered result, not just the current page)
     csv = filtered_df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Download results (CSV)",
+        label="📥 Download all filtered results (CSV)",
         data=csv,
         file_name="filtered_books.csv",
         mime="text/csv"
@@ -198,4 +213,14 @@ st.sidebar.markdown("---")
 st.sidebar.info(
     "Data provided by [EbookFoundation](https://github.com/EbookFoundation/free-programming-books). "
     "Built with ❤️ using Streamlit."
+)
+
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>"
+    "Built by <b>Jose Luis Asenjo</b> · "
+    "<a href='https://www.linkedin.com/in/joseluisasenjo' target='_blank'>LinkedIn</a> &nbsp;|&nbsp; "
+    "<a href='https://joseasenjo.github.io/portfolio/' target='_blank'>Portfolio</a>"
+    "</div>",
+    unsafe_allow_html=True
 )

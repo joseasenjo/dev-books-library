@@ -12,6 +12,14 @@ from rapidfuzz import fuzz, process
 
 # --- Data Loading with Multiple Fallbacks ---
 
+CATEGORY_LABELS = {
+    'books': '📚 Books',
+    'casts': '🎧 Screencasts',
+    'courses': '🎓 Courses',
+    'more': '🔧 Other',
+}
+
+
 def _extract_entries(section: dict, language: str, category: str, rows: list) -> None:
     """Recursively walk a section's entries/subsections and append flat book rows."""
     for entry in section.get('entries') or []:
@@ -39,7 +47,8 @@ def _parse_fpb_tree(data: dict) -> pd.DataFrame:
     """
     rows: list = []
     for top in data.get('children') or []:
-        category = top.get('type', 'other')
+        raw_category = top.get('type', 'other')
+        category = CATEGORY_LABELS.get(raw_category, raw_category)
         for lang_node in top.get('children') or []:
             language = (lang_node.get('language') or {}).get('name') or 'Unknown'
             for section in lang_node.get('sections') or []:
