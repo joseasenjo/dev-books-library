@@ -22,9 +22,10 @@ def load_books() -> pd.DataFrame:
     url = "https://cdn.jsdelivr.net/gh/EbookFoundation/free-programming-books-search@main/fpb.json"
     
     try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()  # Lanza una excepción si la respuesta no es 200 OK
-        data = response.json()
+        with st.spinner("Loading library data..."):
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            data = response.json()
         
         if not data:
             st.warning("The dataset is empty.")
