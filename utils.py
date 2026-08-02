@@ -12,6 +12,41 @@ from rapidfuzz import fuzz, process
 
 # --- Data Loading with Multiple Fallbacks ---
 
+def _extract_entries(section: dict, language: str, category: str, rows: list) -> None:
+    """Recursively walk a section's entries/subsections and append flat book rows."""
+    for entry in section.get('entries') or []:
+        title = entry.get('title')
+        if not title:
+            continue
+        notes = entry.get('notes') or []
+        rows.append({
+            'title': title,
+            'author': entry.get('author') or 'Unknown',
+            'language': language,
+            'format': ', '.join(notes) if notes else 'N/A',
+            'url': entry.get('url'),
+            'category': category,
+        })
+    for sub in section.get('subsections') or []:
+        _extract_entries(sub, language, category, rows)
+
+
+def _parse_fpb_tree(data: dict) -> pd.DataFrame:
+    """
+    Flatten the nested free-programming-books-search JSON tree
+    (root -> category[books/casts/courses/more] -> language -> sections -> entries)
+    into a flat DataFrame of individual resources.
+    """
+    rows: list = []
+    for top in data.get('children') or []:
+        category = top.get('type', 'other')
+        for lang_node in top.get('children') or []:
+            language = (lang_node.get('language') or {}).get('name') or 'Unknown'
+            for section in lang_node.get('sections') or []:
+                _extract_entries(section, language, category, rows)
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_books(force_reload: bool = False) -> pd.DataFrame:
     """
@@ -25,9 +60,9 @@ def load_books(force_reload: bool = False) -> pd.DataFrame:
         "https://raw.githubusercontent.com/EbookFoundation/free-programming-books-search/main/fpb.json",
         "https://ebookfoundation.github.io/free-programming-books-search/fpb.json",
     ]
-    
+
     last_error = None
-    
+
     for url in urls:
         for attempt in range(1, 4):  # 3 intentos por URL
             try:
@@ -35,29 +70,33 @@ def load_books(force_reload: bool = False) -> pd.DataFrame:
                     response = requests.get(url, timeout=30)
                     response.raise_for_status()
                     data = response.json()
-                
+
                 if not data:
                     continue  # Si viene vacío, probar siguiente URL
-                
-                # Convertir a DataFrame
-                df = pd.DataFrame(data)
-                
+
+                # El JSON es un árbol anidado (root -> categoría -> idioma -> secciones -> entries),
+                # no una lista plana de libros: hay que aplanarlo antes de usarlo.
+                if isinstance(data, dict) and 'children' in data:
+                    df = _parse_fpb_tree(data)
+                else:
+                    df = pd.DataFrame(data)
+
                 # Normalizar columnas
                 df.columns = [col.lower().strip() for col in df.columns]
-                
+
                 # Asegurar columnas esenciales
                 essential = ['title', 'author', 'language', 'format', 'url']
                 for col in essential:
                     if col not in df.columns:
                         df[col] = None
-                
+
                 # Eliminar filas sin título
                 df = df[df['title'].notna() & (df['title'] != '')]
-                
+
                 # Si tenemos al menos un libro, retornar éxito
                 if len(df) > 0:
                     return df
-                
+
             except requests.exceptions.Timeout:
                 last_error = "Timeout"
                 continue
