@@ -1,63 +1,87 @@
 """
 Utility functions for Dev Books Library.
-Handles data loading, filtering, and statistics.
+Handles data loading with multiple fallbacks and robust error handling.
 """
 
 import requests
 import pandas as pd
 import streamlit as st
+import time
 from typing import List, Optional, Set
 from rapidfuzz import fuzz, process
 
-# --- Data Loading ---
+# --- Data Loading with Multiple Fallbacks ---
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def load_books() -> pd.DataFrame:
+def load_books(force_reload: bool = False) -> pd.DataFrame:
     """
-    Load the book dataset from the official repository.
-    Uses the jsdelivr CDN for maximum reliability and speed.
+    Load the book dataset from multiple sources with retries.
+    - force_reload: if True, bypass cache and force a fresh download.
     Returns a pandas DataFrame with all books, or an empty DataFrame on failure.
     """
-    # URL que ha funcionado de forma fiable
-    url = "https://cdn.jsdelivr.net/gh/EbookFoundation/free-programming-books-search@main/fpb.json"
+    # Lista de URLs probadas (ordenadas por fiabilidad)
+    urls = [
+        "https://cdn.jsdelivr.net/gh/EbookFoundation/free-programming-books-search@main/fpb.json",
+        "https://raw.githubusercontent.com/EbookFoundation/free-programming-books-search/main/fpb.json",
+        "https://ebookfoundation.github.io/free-programming-books-search/fpb.json",
+    ]
     
-    try:
-        with st.spinner("Loading library data..."):
-            response = requests.get(url, timeout=20)
-            response.raise_for_status()
-            data = response.json()
-        
-        if not data:
-            st.warning("The dataset is empty.")
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        
-        # Normalizar nombres de columnas: minúsculas y sin espacios
-        df.columns = [col.lower().strip() for col in df.columns]
-        
-        # Asegurar que las columnas esenciales existen
-        essential = ['title', 'author', 'language', 'format', 'url']
-        for col in essential:
-            if col not in df.columns:
-                df[col] = None  # Añadir columna vacía si no existe
-        
-        # Eliminar filas sin título (no son útiles)
-        df = df[df['title'].notna() & (df['title'] != '')]
-        
-        return df
+    last_error = None
     
-    except requests.exceptions.Timeout:
-        st.error("⏰ The request timed out. Please try again later.")
-    except requests.exceptions.HTTPError as e:
-        st.error(f"❌ HTTP error: {e}")
-    except requests.exceptions.ConnectionError:
-        st.error("🌐 Connection error. Please check your internet connection.")
-    except requests.exceptions.JSONDecodeError:
-        st.error("📄 Invalid JSON response from the server.")
-    except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
+    for url in urls:
+        for attempt in range(1, 4):  # 3 intentos por URL
+            try:
+                with st.spinner(f"Loading data from source {urls.index(url)+1} (attempt {attempt})..."):
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+                
+                if not data:
+                    continue  # Si viene vacío, probar siguiente URL
+                
+                # Convertir a DataFrame
+                df = pd.DataFrame(data)
+                
+                # Normalizar columnas
+                df.columns = [col.lower().strip() for col in df.columns]
+                
+                # Asegurar columnas esenciales
+                essential = ['title', 'author', 'language', 'format', 'url']
+                for col in essential:
+                    if col not in df.columns:
+                        df[col] = None
+                
+                # Eliminar filas sin título
+                df = df[df['title'].notna() & (df['title'] != '')]
+                
+                # Si tenemos al menos un libro, retornar éxito
+                if len(df) > 0:
+                    return df
+                
+            except requests.exceptions.Timeout:
+                last_error = "Timeout"
+                continue
+            except requests.exceptions.HTTPError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                if e.response.status_code == 404:
+                    break  # Si es 404, esta URL no existe, pasar a la siguiente
+                continue
+            except requests.exceptions.ConnectionError:
+                last_error = "Connection error"
+                continue
+            except requests.exceptions.JSONDecodeError:
+                last_error = "Invalid JSON"
+                continue
+            except Exception as e:
+                last_error = str(e)
+                continue
+        
+        # Si después de 3 intentos falla, pasar a la siguiente URL
+        continue
     
+    # Si todas las URLs fallaron, mostrar error detallado
+    st.error(f"❌ Failed to load data from all sources. Last error: {last_error}")
+    st.info("💡 You can try reloading the page or click the 'Retry' button below.")
     return pd.DataFrame()
 
 
@@ -122,7 +146,6 @@ def filter_books(
     if search_term:
         search_term = search_term.strip()
         if use_fuzzy:
-            # Fuzzy search: compute similarity on title+author
             filtered['_search_text'] = (filtered['title'].fillna('') + ' ' + filtered['author'].fillna('')).str.lower()
             
             if len(filtered) < 50000:
@@ -137,7 +160,6 @@ def filter_books(
                 matched_indices = [i for i, (_, score, idx) in enumerate(matches)]
                 filtered = filtered.iloc[matched_indices]
             else:
-                # Fallback para conjuntos de datos grandes
                 filtered = filtered[
                     filtered['title'].str.contains(search_term, case=False, na=False) |
                     filtered['author'].str.contains(search_term, case=False, na=False)
@@ -146,7 +168,6 @@ def filter_books(
             if '_search_text' in filtered.columns:
                 filtered = filtered.drop(columns=['_search_text'])
         else:
-            # Búsqueda simple por subcadena (insensible a mayúsculas)
             filtered = filtered[
                 filtered['title'].str.contains(search_term, case=False, na=False) |
                 filtered['author'].str.contains(search_term, case=False, na=False)
@@ -158,9 +179,6 @@ def filter_books(
 # --- Statistics ---
 
 def get_language_counts(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a DataFrame with counts of books per language.
-    """
     if 'language' in df.columns:
         counts = df['language'].value_counts().reset_index()
         counts.columns = ['language', 'count']
@@ -169,9 +187,6 @@ def get_language_counts(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_format_counts(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a DataFrame with counts of books per format.
-    """
     if 'format' in df.columns:
         counts = df['format'].value_counts().reset_index()
         counts.columns = ['format', 'count']
@@ -180,9 +195,6 @@ def get_format_counts(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_top_authors(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
-    """
-    Return the top N authors by number of books.
-    """
     if 'author' in df.columns:
         counts = df['author'].value_counts().head(top_n).reset_index()
         counts.columns = ['author', 'count']
@@ -190,13 +202,9 @@ def get_top_authors(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     return pd.DataFrame(columns=['author', 'count'])
 
 
-# --- Utility for session state favorites (optional) ---
+# --- Favorites utility ---
 
 def toggle_favorite(book_title: str, favorites: Set[str]) -> Set[str]:
-    """
-    Toggle a book title in the favorites set.
-    Returns the updated set.
-    """
     if book_title in favorites:
         favorites.remove(book_title)
     else:
