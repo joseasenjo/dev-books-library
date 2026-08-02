@@ -6,7 +6,16 @@ Search, filter, and explore thousands of free programming books.
 import streamlit as st
 import pandas as pd
 import altair as alt
-from utils import load_books, get_languages, get_formats, get_categories, filter_books, get_language_counts
+from utils import (
+    load_books,
+    get_languages,
+    get_formats,
+    get_categories,
+    filter_books,
+    get_language_counts,
+    get_format_counts,
+    get_top_authors
+)
 
 # Page configuration
 st.set_page_config(
@@ -16,14 +25,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Load data
-df = load_books()
-if df.empty:
-    st.stop()
-
-# Session state for favorites
+# Initialize session state for favorites
 if "favorites" not in st.session_state:
     st.session_state.favorites = set()
+
+# Load data
+df = load_books()
+
+# If data failed to load, show a friendly message and stop
+if df.empty:
+    st.error("❌ No se pudo cargar la biblioteca de libros. Intenta recargar la página más tarde.")
+    st.stop()
 
 # Sidebar – Filters
 st.sidebar.title("🔎 Filters")
@@ -54,16 +66,18 @@ filtered_df = filter_books(
 
 # Main area
 st.title("📚 Dev Books Library")
-st.caption("A curated collection of over 7,000 free programming books")
+st.caption("A curated collection of free programming books – powered by the EbookFoundation dataset")
 
 # Stats row
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total books", len(df))
 col2.metric("Filtered results", len(filtered_df))
-col3.metric("Languages available", len(languages))
+col3.metric("Languages", len(languages))
+col4.metric("Formats", len(formats))
 
-# Chart: distribution by language (of filtered results)
+# --- Visualizations (only if filtered data is not empty) ---
 if not filtered_df.empty:
+    # Distribution by language (top 15)
     lang_counts = get_language_counts(filtered_df)
     if not lang_counts.empty:
         chart = alt.Chart(lang_counts.head(15)).mark_bar().encode(
@@ -71,32 +85,41 @@ if not filtered_df.empty:
             y=alt.Y('count', title='Number of books'),
             tooltip=['language', 'count']
         ).properties(
-            title='Books by Language (top 15)',
+            title='Books by Language (Top 15)',
             height=300
         )
         st.altair_chart(chart, use_container_width=True)
-
-# Display books
-st.subheader("📖 Book List")
-if filtered_df.empty:
-    st.info("No books match your criteria. Try adjusting filters.")
+    
+    # Optional: Format distribution
+    format_counts = get_format_counts(filtered_df)
+    if not format_counts.empty:
+        format_chart = alt.Chart(format_counts).mark_arc(innerRadius=50).encode(
+            theta="count",
+            color="format",
+            tooltip=["format", "count"]
+        ).properties(
+            title="Format Distribution",
+            height=300
+        )
+        st.altair_chart(format_chart, use_container_width=True)
 else:
-    # Prepare display columns
-    display_cols = ['title', 'author', 'language', 'format', 'url']
-    # If category exists, add it
-    if 'category' in filtered_df.columns:
-        display_cols.insert(2, 'category')
-    
-    # Create a copy for display
-    display_df = filtered_df[display_cols].copy()
-    
-    # Add a "Favorite" column with buttons (using session state)
-    # We'll use a checkbox or button per row, but for simplicity we'll show favorites in another section.
-    # Let's add a "Add to favorites" button column using st.dataframe with column config (not straightforward)
-    # Alternative: use st.data_editor with a custom column for favorites.
-    # We'll implement a simple favorite toggle using a separate section and buttons.
-    
-    # For now, we'll just show the table with links
+    st.info("ℹ️ No books match your current filters. Try adjusting your search or filters.")
+
+# --- Display books in a table ---
+st.subheader("📖 Book List")
+
+# Determine which columns to display
+display_cols = ['title', 'author', 'language', 'format', 'url']
+if 'category' in filtered_df.columns:
+    display_cols.insert(2, 'category')
+
+# Prepare display DataFrame
+display_df = filtered_df[display_cols].copy()
+
+if display_df.empty:
+    st.info("No books to display.")
+else:
+    # Show the table with clickable links
     st.dataframe(
         display_df,
         column_config={
@@ -105,12 +128,13 @@ else:
             "author": "Author",
             "language": "Language",
             "format": "Format",
+            "category": "Category"
         },
         hide_index=True,
         use_container_width=True
     )
-    
-    # Download filtered results as CSV
+
+    # Download button
     csv = filtered_df.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Download results (CSV)",
@@ -119,66 +143,49 @@ else:
         mime="text/csv"
     )
 
-# Favorites section (optional)
+# --- Favorites Section ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("⭐ Favorites")
+
+# Allow users to add favorites directly from the main table using a simple checkbox approach
+st.subheader("⭐ Mark your favorite books")
+
+# We'll use a data editor with a checkbox column to toggle favorites
+# Create a copy of filtered_df with a 'Favorite' column
+fav_df = filtered_df[['title', 'author', 'language']].copy()
+fav_df['Favorite'] = fav_df['title'].apply(lambda x: x in st.session_state.favorites)
+
+# Use st.data_editor to allow toggling favorites
+edited_fav = st.data_editor(
+    fav_df,
+    column_config={
+        "Favorite": st.column_config.CheckboxColumn("⭐ Favorite", default=False),
+        "title": "Title",
+        "author": "Author",
+        "language": "Language"
+    },
+    hide_index=True,
+    use_container_width=True,
+    key="favorites_editor"
+)
+
+# Button to save favorites from the editor
+if st.button("💾 Save favorites"):
+    # Update session state from the edited dataframe
+    new_favs = set(edited_fav[edited_fav['Favorite']]['title'])
+    st.session_state.favorites = new_favs
+    st.success(f"Favorites updated ({len(new_favs)} books)")
+    st.rerun()
+
+# Display current favorites in sidebar
 if st.session_state.favorites:
-    fav_df = df[df['title'].isin(st.session_state.favorites)]
-    if not fav_df.empty:
-        st.sidebar.dataframe(fav_df[['title', 'author']], hide_index=True)
+    fav_books = df[df['title'].isin(st.session_state.favorites)]
+    if not fav_books.empty:
+        st.sidebar.dataframe(fav_books[['title', 'author']], hide_index=True)
     else:
         st.sidebar.write("No favorites yet.")
 else:
     st.sidebar.write("Click the star on any book to add it.")
-
-# Add a simple way to add/remove favorites (e.g., from the table, but we'll need to handle on click)
-# For a more advanced version, you could implement a button per row using st.columns inside a loop.
-# For brevity, I'll demonstrate a basic version: in the main area, we can have a "Add to favorites" button for each book.
-# But that's not efficient for large datasets. Instead, we'll use a simple selectbox or allow users to input a title.
-# Alternatively, we can add a "Favorite" checkbox in the dataframe using st.data_editor with a column of booleans.
-# Let's implement the data_editor approach:
-st.subheader("⭐ Mark your favorites")
-# Create a copy and add a checkbox column
-edit_df = filtered_df[['title', 'author', 'language', 'format', 'url']].copy()
-edit_df['Favorite'] = edit_df['title'].apply(lambda x: x in st.session_state.favorites)
-
-# Use st.data_editor to allow toggling favorites
-edited = st.data_editor(
-    edit_df,
-    column_config={
-        "url": st.column_config.LinkColumn("Link"),
-        "Favorite": st.column_config.CheckboxColumn("⭐ Favorite", default=False),
-    },
-    hide_index=True,
-    use_container_width=True,
-    key="favorite_editor"
-)
-
-# Update favorites based on changes
-# We need to detect which rows have been toggled
-# But st.data_editor returns the entire dataframe, so we can compare
-if 'edited' in st.session_state and st.session_state.edited:
-    # For simplicity, we'll just update the set from the edited dataframe
-    new_favs = set(edited[edited['Favorite']]['title'])
-    st.session_state.favorites = new_favs
-    st.rerun()  # to reflect changes
-else:
-    # On first load, ensure the editor reflects the session state
-    pass
-
-# We need to store the edited state in session to avoid rerun loops
-# Actually, we can just update when user interacts. Let's simplify: we'll use a button to save favorites.
-# But the data_editor approach is interactive; we can update on change by using a callback.
-# For simplicity, we'll just rely on the data_editor and when the user clicks a checkbox, it updates the session state.
-# However, data_editor does not automatically update session_state. We need to capture the changes.
-# One way: use a button to "Update favorites" that reads the edited dataframe.
-# I'll implement a button:
-
-if st.button("💾 Update favorites"):
-    fav_titles = set(edited[edited['Favorite']]['title'])
-    st.session_state.favorites = fav_titles
-    st.success(f"Favorites updated ({len(fav_titles)} books)")
-    st.rerun()
 
 # Footer
 st.sidebar.markdown("---")
